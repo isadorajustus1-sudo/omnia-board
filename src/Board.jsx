@@ -6,6 +6,7 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 const clone = (o) => JSON.parse(JSON.stringify(o))
 const NOTE_COLORS = ['#ffd94d', '#ffb26b', '#7ee787', '#79c0ff', '#d2a8ff', '#ff7eb6', '#e6edf3']
 const PEER_COLORS = ['#ff7eb6', '#7ee787', '#79c0ff', '#ffd94d', '#d2a8ff', '#ff9a5a', '#5eead4', '#f778ba']
+const CONN_COLORS = ['#8a76ac', '#2b2333', '#c0392b', '#79c0ff', '#7ee787']
 // post-it (sticky) fica por último na barra
 const TOOLS = [
   ['select', '↖', 'Selecionar (V)'], ['rect', '▭', 'Retângulo'], ['ellipse', '◯', 'Elipse'],
@@ -52,6 +53,21 @@ const elbowPath = (p1, s1, p2, s2, mid) => {
   else { pts.push({ x: a.x, y: b.y }) }
   pts.push(b, p2)
   return pts
+}
+// resolve as duas pontas de um conector (lado flutuante 'auto' recalculado pela posição do outro objeto)
+const connectorEnds = (o, m) => {
+  const o1 = o.a1 && m[o.a1.id]; const o2 = o.a2 && m[o.a2.id]
+  const resolveSide = (a, self, other, freePt) => {
+    if (!a) return null
+    if (a.side && a.side !== 'auto') return a.side
+    const ref = other ? { x: other.x + (other.w || 0) / 2, y: other.y + (other.h || 0) / 2 } : freePt
+    return nearestSide(self, ref)
+  }
+  const side1 = o1 ? resolveSide(o.a1, o1, o2, { x: o.x2, y: o.y2 }) : null
+  const side2 = o2 ? resolveSide(o.a2, o2, o1, { x: o.x, y: o.y }) : null
+  const p1 = o1 ? anchorPoint(o1, side1) : { x: o.x, y: o.y }
+  const p2 = o2 ? anchorPoint(o2, side2) : { x: o.x2, y: o.y2 }
+  return { p1, p2, side1, side2 }
 }
 // path SVG com cantos arredondados a partir de uma lista de pontos
 const roundedPath = (pts, r = 12) => {
@@ -226,13 +242,28 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
         const el = editRef.current; if (el) livePatch(editing, { html: el.innerHTML, text: el.innerText }); return
       }
       if (editing) return
+      if (e.key === 'Tab') {
+        const ss = [...selRef.current]
+        if (ss.length === 1) { const o = objsRef.current[ss[0]]; if (o && o.type === 'arrow') { e.preventDefault(); const modes = ['elbow', 'curved', 'straight']; const ni = (modes.indexOf(o.shape || 'elbow') + 1) % 3; mutate(ss[0], x => ({ ...x, shape: modes[ni] })) } }
+        return
+      }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         const ids = [...selRef.current].filter(id => objsRef.current[id])
         if (ids.length) {
+          const idset = new Set(ids)
+          const freeBefore = [], freeAfter = []
+          Object.values(objsRef.current).forEach(o => {
+            if (o.type === 'arrow' && !idset.has(o.id) && ((o.a1 && idset.has(o.a1.id)) || (o.a2 && idset.has(o.a2.id)))) {
+              const g = connectorEnds(o, objsRef.current); const n = clone(o)
+              if (o.a1 && idset.has(o.a1.id)) { n.a1 = null; n.x = g.p1.x; n.y = g.p1.y }
+              if (o.a2 && idset.has(o.a2.id)) { n.a2 = null; n.x2 = g.p2.x; n.y2 = g.p2.y }
+              freeBefore.push({ t: 'up', o: clone(o) }); freeAfter.push({ t: 'up', o: n })
+            }
+          })
           const delOps = ids.map(id => ({ t: 'del', id }))
           const upOps = ids.map(id => ({ t: 'up', o: clone(objsRef.current[id]) }))
-          applyOp({ t: 'batch', ops: delOps })
-          pushHist({ t: 'batch', ops: upOps }, { t: 'batch', ops: delOps })
+          applyOp({ t: 'batch', ops: [...delOps, ...freeAfter] })
+          pushHist({ t: 'batch', ops: [...upOps, ...freeBefore] }, { t: 'batch', ops: [...delOps, ...freeAfter] })
           setSelIds(new Set())
         }
         return
@@ -270,6 +301,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
     const rotate = !!e.target?.dataset?.rotate
     const anchor = e.target?.dataset?.anchor
     const anchorId = e.target?.dataset?.aid
+    const eph = e.target?.dataset?.eph
     const hitId = e.target.closest('[data-id]')?.dataset.id
     vpRef.current.setPointerCapture(e.pointerId)
     setHoverId(null); setMenu(null); setCommentFor(null)
@@ -282,10 +314,15 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
     }
     if (e.button !== 0) return
 
+    // reconectar uma ponta de um conector selecionado
+    if (eph && selRef.current.size === 1) {
+      const id = [...selRef.current][0]; const o = objsRef.current[id]
+      if (o && o.type === 'arrow') { drag.current = { mode: 'reconnect', id, which: eph, before: clone(o) }; return }
+    }
     // puxar um conector a partir de um ponto de ancoragem (meio do lado)
     if (anchor && anchorId && objsRef.current[anchorId]) {
       const src = objsRef.current[anchorId]; const p = anchorPoint(src, anchor)
-      const o = { id: uid(), type: 'arrow', x: p.x, y: p.y, x2: wp.x, y2: wp.y, color: '#8a76ac', a1: { id: anchorId, side: anchor } }
+      const o = { id: uid(), type: 'arrow', x: p.x, y: p.y, x2: wp.x, y2: wp.y, color: '#8a76ac', shape: 'elbow', a1: { id: anchorId, side: anchor } }
       applyOp({ t: 'up', o }); drag.current = { mode: 'connect', id: o.id }; return
     }
 
@@ -303,7 +340,11 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
     if (tool === 'select') {
       if (hitId) {
         const ho = objsRef.current[hitId]
-        if (!e.shiftKey && ho && ho.type === 'arrow' && ho.a1 && ho.a2) { setSelSingle(hitId); drag.current = { mode: 'reroute', id: hitId, before: clone(ho) }; return }
+        if (!e.shiftKey && ho && ho.type === 'arrow') {
+          setSelSingle(hitId)
+          if (ho.a1 && ho.a2 && (ho.shape || 'elbow') === 'elbow') drag.current = { mode: 'reroute', id: hitId, before: clone(ho) }
+          return
+        }
         if (e.shiftKey) { setSelIds(prev => { const n = new Set(prev); n.has(hitId) ? n.delete(hitId) : n.add(hitId); return n }); return }
         let ids
         if (selRef.current.has(hitId) && selRef.current.size > 1) ids = [...selRef.current]
@@ -327,8 +368,8 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
     else if (tool === 'rect' || tool === 'ellipse') { o = { id: uid(), type: tool, x: wp.x, y: wp.y, w: 1, h: 1, text: '', color, rot: 0 }; applyOp({ t: 'up', o }); drag.current = { mode: 'create', id: o.id, sx: wp.x, sy: wp.y }; return }
     else if (tool === 'arrow') {
       const startEl = topmostConnectableAt(wp)
-      o = { id: uid(), type: 'arrow', x: wp.x, y: wp.y, x2: wp.x, y2: wp.y, color }
-      if (startEl) { const side = nearestSide(startEl, wp); const ap = anchorPoint(startEl, side); o.a1 = { id: startEl.id, side }; o.x = ap.x; o.y = ap.y }
+      o = { id: uid(), type: 'arrow', x: wp.x, y: wp.y, x2: wp.x, y2: wp.y, color, shape: 'elbow' }
+      if (startEl) o.a1 = { id: startEl.id, side: 'auto' }
       applyOp({ t: 'up', o }); drag.current = { mode: 'arrow', id: o.id }; return
     }
     else if (tool === 'pen') { o = { id: uid(), type: 'pen', x: 0, y: 0, points: [[wp.x, wp.y]], color }; applyOp({ t: 'up', o }); drag.current = { mode: 'pen', id: o.id }; return }
@@ -350,6 +391,12 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
       const tgt = topmostConnectableAt(wp, arw?.a1?.id, 40) // ímã: pega de longe
       if (tgt && arw) { const side = nearestSide(tgt, { x: arw.x, y: arw.y }); const ap = anchorPoint(tgt, side); livePatch(d.id, { x2: ap.x, y2: ap.y }) }
       else livePatch(d.id, { x2: wp.x, y2: wp.y })
+      setConnTarget(p => p === (tgt?.id || null) ? p : (tgt?.id || null)); return
+    }
+    if (d.mode === 'reconnect') {
+      const tgt = topmostConnectableAt(wp, null, 40)
+      if (d.which === 'start') { if (tgt) livePatch(d.id, { a1: { id: tgt.id, side: 'auto' } }); else livePatch(d.id, { a1: null, x: wp.x, y: wp.y }) }
+      else { if (tgt) livePatch(d.id, { a2: { id: tgt.id, side: 'auto' } }); else livePatch(d.id, { a2: null, x2: wp.x, y2: wp.y }) }
       setConnTarget(p => p === (tgt?.id || null) ? p : (tgt?.id || null)); return
     }
     if (d.mode === 'reroute') {
@@ -414,8 +461,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
       const pt = { x: arw.x2, y: arw.y2 }
       const target = topmostConnectableAt(pt, arw.a1?.id, 18)
       if (target) {
-        const side = nearestSide(target, { x: arw.x, y: arw.y }); const ap = anchorPoint(target, side)
-        const fin = { ...arw, a2: { id: target.id, side }, x2: ap.x, y2: ap.y }
+        const fin = { ...arw, a2: { id: target.id, side: 'auto' } }
         applyOp({ t: 'up', o: fin }); pushHist({ t: 'del', id: arw.id }, { t: 'up', o: fin }); setSelSingle(arw.id)
       } else if (Math.hypot(arw.x2 - arw.x, arw.y2 - arw.y) < 12) {
         applyOp({ t: 'del', id: arw.id })
@@ -423,6 +469,11 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
         chanRef.current?.send({ type: 'broadcast', event: 'op', payload: { t: 'up', o: arw } }); scheduleSave()
         pushHist({ t: 'del', id: arw.id }, { t: 'up', o: arw }); setSelSingle(arw.id)
       }
+      return
+    }
+    if (d.mode === 'reconnect') {
+      const o = objsRef.current[d.id]
+      if (o) { chanRef.current?.send({ type: 'broadcast', event: 'op', payload: { t: 'up', o } }); scheduleSave(); if (d.before) histChange(d.before, o) }
       return
     }
     if (d.mode === 'reroute') {
@@ -435,7 +486,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
       if (arw) {
         const endEl = topmostConnectableAt({ x: arw.x2, y: arw.y2 }, arw.a1?.id, 18)
         let fin = arw
-        if (endEl) { const side = nearestSide(endEl, { x: arw.x, y: arw.y }); const ap = anchorPoint(endEl, side); fin = { ...arw, a2: { id: endEl.id, side }, x2: ap.x, y2: ap.y } }
+        if (endEl) fin = { ...arw, a2: { id: endEl.id, side: 'auto' } }
         applyOp({ t: 'up', o: fin }); pushHist({ t: 'del', id: arw.id }, { t: 'up', o: fin }); setSelSingle(arw.id)
       }
       setTool('select'); return
@@ -467,11 +518,19 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
   const selArr = [...selIds]
   const soleSel = selArr.length === 1 ? objs[selArr[0]] : null
   const showFrame = soleSel && (soleSel.type === 'sticky' || soleSel.type === 'rect' || soleSel.type === 'ellipse')
-  const arrowPath = (o) => {
-    const s = o.a1 && objs[o.a1.id] ? anchorPoint(objs[o.a1.id], o.a1.side) : { x: o.x, y: o.y }
-    const t = o.a2 && objs[o.a2.id] ? anchorPoint(objs[o.a2.id], o.a2.side) : { x: o.x2, y: o.y2 }
-    if (o.a1 && o.a2 && objs[o.a1.id] && objs[o.a2.id]) return elbowPath(s, o.a1.side, t, o.a2.side, o.mid)
-    return [s, t]
+  const arrowGeom = (o) => connectorEnds(o, objs)
+  const arrowD = (o) => {
+    const { p1, p2, side1, side2 } = connectorEnds(o, objs)
+    const shape = o.shape || 'elbow'
+    if (shape === 'straight') return `M ${p1.x} ${p1.y} L ${p2.x} ${p2.y}`
+    if (shape === 'curved') {
+      const d1 = SIDE_DIR[side1 || 'r'] || [0, 0], d2 = SIDE_DIR[side2 || 'l'] || [0, 0]
+      const dd = Math.hypot(p2.x - p1.x, p2.y - p1.y); const k = Math.max(40, dd * 0.4)
+      const c1 = { x: p1.x + d1[0] * k, y: p1.y + d1[1] * k }, c2 = { x: p2.x + d2[0] * k, y: p2.y + d2[1] * k }
+      return `M ${p1.x} ${p1.y} C ${c1.x} ${c1.y} ${c2.x} ${c2.y} ${p2.x} ${p2.y}`
+    }
+    if (side1 && side2) return roundedPath(elbowPath(p1, side1, p2, side2, o.mid))
+    return roundedPath([p1, p2])
   }
   const hoverObj = hoverId ? objs[hoverId] : null
   const anchObj = (hoverObj && CONNECTABLE(hoverObj.type)) ? hoverObj
@@ -494,8 +553,8 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
       <BgDots view={view} />
       <div className="world" style={{ transform: `translate(${view.x}px,${view.y}px) scale(${view.z})` }}>
         <svg style={{ position: 'absolute', left: 0, top: 0, width: 1, height: 1, overflow: 'visible', pointerEvents: 'none' }}>
-          <defs>{[...new Set([...PEER_COLORS, ...NOTE_COLORS, '#8a76ac'])].map(c => (<marker key={c} id={'ah' + c.replace('#', '')} markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill={c} /></marker>))}</defs>
-          {Object.values(objs).filter(o => o.type === 'arrow').map(o => { const dPath = roundedPath(arrowPath(o)); return (<g key={o.id}>
+          <defs>{[...new Set([...PEER_COLORS, ...NOTE_COLORS, ...CONN_COLORS])].map(c => (<marker key={c} id={'ah' + c.replace('#', '')} markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill={c} /></marker>))}</defs>
+          {Object.values(objs).filter(o => o.type === 'arrow').map(o => { const dPath = arrowD(o); return (<g key={o.id}>
             <path data-id={o.id} d={dPath} fill="none" stroke="transparent" strokeWidth={16} style={{ pointerEvents: 'stroke' }} />
             {selIds.has(o.id) && <path d={dPath} fill="none" stroke="#8a76ac" strokeWidth={9} strokeLinecap="round" strokeLinejoin="round" opacity="0.4" style={{ pointerEvents: 'none' }} />}
             <path d={dPath} fill="none" stroke={o.color} strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" markerEnd={`url(#ah${o.color.replace('#', '')})`} style={{ pointerEvents: 'none' }} />
@@ -538,6 +597,10 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
             <span className="anchor a-l" data-anchor="l" data-aid={anchObj.id} title="Puxar conector" />
           </div>
         )}
+        {soleSel && soleSel.type === 'arrow' && (() => { const g = connectorEnds(soleSel, objs); return (<React.Fragment>
+          <span className="eph" data-eph="start" style={{ left: g.p1.x, top: g.p1.y }} />
+          <span className="eph" data-eph="end" style={{ left: g.p2.x, top: g.p2.y }} />
+        </React.Fragment>) })()}
         {marquee && <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h }} />}
       </div>
 
@@ -608,6 +671,18 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
           </div>
           <button className="ctx-item" onClick={() => { setCommentText(''); setCommentFor({ id: menu.id, x: menu.x, y: menu.y }); setMenu(null) }}>💬 Adicionar comentário</button>
           <button className="ctx-item danger" onClick={() => { const o = objsRef.current[menu.id]; applyOp({ t: 'del', id: menu.id }); if (o) pushHist({ t: 'up', o }, { t: 'del', id: menu.id }); setSelIds(new Set()); setMenu(null) }}>🗑 Apagar</button>
+        </div>
+      ) })()}
+
+      {soleSel && soleSel.type === 'arrow' && (() => { const g = connectorEnds(soleSel, objs); const mx = (g.p1.x + g.p2.x) / 2, my = (g.p1.y + g.p2.y) / 2; const bx = clamp(view.x + mx * view.z - 100, 8, window.innerWidth - 220); const by = Math.max(8, view.y + my * view.z - 52); const sh = soleSel.shape || 'elbow'; return (
+        <div className="connbar" style={{ left: bx, top: by }} onPointerDown={(e) => e.stopPropagation()} onContextMenu={(e) => e.preventDefault()}>
+          <button className={sh === 'straight' ? 'on' : ''} title="Reta" onClick={() => mutate(soleSel.id, o => ({ ...o, shape: 'straight' }))}>╱</button>
+          <button className={sh === 'curved' ? 'on' : ''} title="Curva" onClick={() => mutate(soleSel.id, o => ({ ...o, shape: 'curved' }))}>⌒</button>
+          <button className={sh === 'elbow' ? 'on' : ''} title="Cotovelo" onClick={() => mutate(soleSel.id, o => ({ ...o, shape: 'elbow' }))}>⌐</button>
+          <span className="fmt-sep" />
+          {CONN_COLORS.map(c => <span key={c} className={'connsw' + (soleSel.color === c ? ' on' : '')} style={{ background: c }} onClick={() => mutate(soleSel.id, o => ({ ...o, color: c }))} />)}
+          <span className="fmt-sep" />
+          <button title="Apagar" onClick={() => { const o = objsRef.current[soleSel.id]; applyOp({ t: 'del', id: soleSel.id }); if (o) pushHist({ t: 'up', o }, { t: 'del', id: soleSel.id }); setSelIds(new Set()) }}>🗑</button>
         </div>
       ) })()}
 

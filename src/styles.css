@@ -101,6 +101,18 @@ h1,h2,h3{font-family:var(--font-serif);font-weight:600;letter-spacing:-.02em}
 .fmtbar button:hover{background:rgba(255,255,255,.12);color:#fff}
 .fmt-sep{width:1px;height:20px;background:var(--line-white);margin:0 2px;align-self:center}
 
+/* barra de contexto do conector + alças de ponta */
+.connbar{position:fixed;z-index:55;display:flex;align-items:center;gap:4px;background:var(--plum-900);border:1px solid var(--line-white);
+  border-radius:10px;padding:5px;box-shadow:var(--shadow-plum)}
+.connbar button{min-width:30px;height:28px;padding:0 6px;border:0;border-radius:7px;background:transparent;color:var(--lead);cursor:pointer;font-size:15px;display:grid;place-items:center;font-family:var(--font-sans)}
+.connbar button:hover{background:rgba(255,255,255,.12);color:#fff}
+.connbar button.on{background:var(--purple);color:var(--plum-950)}
+.connsw{width:18px;height:18px;border-radius:5px;border:2px solid rgba(255,255,255,.3);cursor:pointer}
+.connsw.on{border-color:#fff;transform:scale(1.1)}
+.eph{position:absolute;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;background:#fff;border:2px solid var(--purple-deep);
+  pointer-events:auto;cursor:crosshair;z-index:7;box-shadow:0 1px 3px rgba(90,80,70,.45)}
+.eph:hover{background:var(--purple-deep)}
+
 /* ===== chrome flutuante (plum sobre o creme) ===== */
 .toolbar{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);display:flex;gap:6px;align-items:center;
   background:var(--plum-900);border:1px solid var(--line-white);border-radius:16px;padding:8px;
