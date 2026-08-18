@@ -29,8 +29,10 @@ export default function Home({ user, onOpenBoard }) {
   const newBoard = async () => {
     const name = prompt('Nome do quadro:', 'Novo quadro') || 'Novo quadro'
     const folder_id = sel === 'all' ? null : sel
-    const { data, error } = await supabase.from('boards').insert({ name, folder_id, created_by: user.id }).select().single()
-    if (data) onOpenBoard(data.id); else alert('Não deu pra criar o quadro: ' + (error?.message || ''))
+    const id = (crypto?.randomUUID?.() || (Date.now() + '-' + Math.random().toString(16).slice(2)))
+    const { error } = await supabase.from('boards').insert({ id, name, folder_id, created_by: user.id })
+    if (error) { alert('Não deu pra criar o quadro: ' + error.message); return }
+    onOpenBoard(id)
   }
   const renameBoard = async (bd) => { const name = prompt('Renomear quadro:', bd.name); if (!name) return; await supabase.from('boards').update({ name }).eq('id', bd.id); setBoards(bs => bs.map(x => x.id === bd.id ? { ...x, name } : x)) }
   const toggleRestrict = async (bd) => {
