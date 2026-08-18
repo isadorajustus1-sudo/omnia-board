@@ -14,7 +14,7 @@ export default function Home({ user, onOpenBoard }) {
     setLoading(true)
     const [f, b] = await Promise.all([
       supabase.from('folders').select('*').order('name'),
-      supabase.from('boards').select('id,name,folder_id,updated_at,created_by').order('updated_at', { ascending: false }),
+      supabase.from('boards').select('id,name,folder_id,updated_at,created_by,restricted').order('updated_at', { ascending: false }),
     ])
     setFolders(f.data || []); setBoards(b.data || []); setLoading(false)
   }, [])
@@ -33,6 +33,12 @@ export default function Home({ user, onOpenBoard }) {
     if (data) onOpenBoard(data.id); else alert('Não deu pra criar o quadro: ' + (error?.message || ''))
   }
   const renameBoard = async (bd) => { const name = prompt('Renomear quadro:', bd.name); if (!name) return; await supabase.from('boards').update({ name }).eq('id', bd.id); setBoards(bs => bs.map(x => x.id === bd.id ? { ...x, name } : x)) }
+  const toggleRestrict = async (bd) => {
+    const nv = !bd.restricted
+    setBoards(bs => bs.map(x => x.id === bd.id ? { ...x, restricted: nv } : x)) // otimista
+    const { error } = await supabase.from('boards').update({ restricted: nv }).eq('id', bd.id)
+    if (error) { alert('Não deu pra alterar: ' + error.message); setBoards(bs => bs.map(x => x.id === bd.id ? { ...x, restricted: !nv } : x)) }
+  }
   const delBoard = async (bd) => { if (!confirm('Apagar o quadro "' + bd.name + '"? Isso não tem volta.')) return; await supabase.from('boards').delete().eq('id', bd.id); setBoards(bs => bs.filter(x => x.id !== bd.id)) }
   const renameFolder = async (f) => { const name = prompt('Renomear pasta:', f.name); if (!name || name === f.name) return; await supabase.from('folders').update({ name }).eq('id', f.id); setFolders(fs => fs.map(x => x.id === f.id ? { ...x, name } : x)) }
   const delFolder = async (f) => { if (!confirm('Apagar a pasta "' + f.name + '"? Os quadros dela ficam sem pasta (não são apagados).')) return; await supabase.from('folders').delete().eq('id', f.id); setFolders(fs => fs.filter(x => x.id !== f.id)); setBoards(bs => bs.map(x => x.folder_id === f.id ? { ...x, folder_id: null } : x)); if (sel === f.id) setSel('all') }
@@ -103,13 +109,13 @@ export default function Home({ user, onOpenBoard }) {
                 onClick={() => onOpenBoard(bd.id)}>
                 <div className="board-thumb">▦</div>
                 <div className="board-meta">
-                  <div className="board-title">{bd.name}</div>
-                  <div className="board-sub">{bd.folder_id ? (folders.find(f => f.id === bd.folder_id)?.name || '—') : 'sem pasta'}</div>
+                  <div className="board-title">{bd.restricted && <span className="lock" title="Restrito: só você e o admin veem">🔒 </span>}{bd.name}</div>
+                  <div className="board-sub">{bd.restricted ? 'restrito a você + admin' : (bd.folder_id ? (folders.find(f => f.id === bd.folder_id)?.name || '—') : 'aberto pra todos')}</div>
                 </div>
                 {canManage(bd) && (
                   <div className="board-actions" onClick={(e) => e.stopPropagation()}>
+                    <button title={bd.restricted ? 'Abrir pra todo mundo' : 'Deixar só pra mim e o admin'} onClick={() => toggleRestrict(bd)}>{bd.restricted ? '🔒' : '🔓'}</button>
                     <button title="Mover para pasta" onClick={() => setMoveBoard(bd)}>📁</button>
-                    <button title="Compartilhar" onClick={() => setShareBoard(bd)}>👥</button>
                     <button title="Renomear" onClick={() => renameBoard(bd)}>✏️</button>
                     <button title="Apagar" onClick={() => delBoard(bd)}>🗑️</button>
                   </div>
