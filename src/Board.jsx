@@ -296,6 +296,8 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
   const applyFmt = (cmd) => { document.execCommand(cmd, false); const el = editRef.current; if (el && editing) livePatch(editing, { html: el.innerHTML, text: el.innerText }) }
 
   const onPointerDown = (e) => {
+    // clicando/arrastando DENTRO de um texto em edição => deixa a seleção de texto nativa (não mexe no elemento)
+    if (e.target.closest && e.target.closest('[contenteditable="true"]')) return
     const wp = toWorld(e.clientX, e.clientY)
     const handle = e.target?.dataset?.handle
     const rotate = !!e.target?.dataset?.rotate
@@ -334,7 +336,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
     // alça de redimensionar (canto)
     if (handle && selRef.current.size === 1) {
       const id = [...selRef.current][0]; const o = objsRef.current[id]
-      drag.current = { mode: 'resize', id, corner: handle, sx: wp.x, sy: wp.y, orig: { x: o.x, y: o.y, w: o.w, h: o.h }, before: clone(o) }; return
+      drag.current = { mode: 'resize', id, corner: handle, sx: wp.x, sy: wp.y, orig: { x: o.x, y: o.y, w: o.w || 200, h: o.h || 50 }, before: clone(o) }; return
     }
 
     if (tool === 'select') {
@@ -364,7 +366,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
     // ferramentas de criação
     let o = null
     if (tool === 'sticky') o = { id: uid(), type: 'sticky', x: wp.x - 90, y: wp.y - 60, w: 180, h: 120, text: '', color, rot: 0 }
-    else if (tool === 'text') o = { id: uid(), type: 'text', x: wp.x, y: wp.y, text: '', color: '#2b2333', rot: 0 }
+    else if (tool === 'text') o = { id: uid(), type: 'text', x: wp.x, y: wp.y, w: 200, h: 50, text: '', color: '#2b2333', rot: 0 }
     else if (tool === 'rect' || tool === 'ellipse') { o = { id: uid(), type: tool, x: wp.x, y: wp.y, w: 1, h: 1, text: '', color, rot: 0 }; applyOp({ t: 'up', o }); drag.current = { mode: 'create', id: o.id, sx: wp.x, sy: wp.y }; return }
     else if (tool === 'arrow') {
       const startEl = topmostConnectableAt(wp)
@@ -379,6 +381,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
   const onPointerMove = (e) => {
     const wp = toWorld(e.clientX, e.clientY); sendCursor(wp.x, wp.y)
     const d = drag.current
+    if (d && e.buttons === 0) { onPointerUp(); return } // botão já foi solto: encerra o arraste na hora
     if (!d) {
       // hover => mostra os pontos de conexão do elemento sob o cursor
       let over = null; const cand = Object.values(objsRef.current).filter(o => CONNECTABLE(o.type))
@@ -522,7 +525,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
 
   const selArr = [...selIds]
   const soleSel = selArr.length === 1 ? objs[selArr[0]] : null
-  const showFrame = soleSel && (soleSel.type === 'sticky' || soleSel.type === 'rect' || soleSel.type === 'ellipse')
+  const showFrame = soleSel && (soleSel.type === 'sticky' || soleSel.type === 'rect' || soleSel.type === 'ellipse' || soleSel.type === 'text')
   const arrowGeom = (o) => connectorEnds(o, objs)
   const arrowD = (o) => {
     const { p1, p2, side1, side2 } = connectorEnds(o, objs)
@@ -544,7 +547,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
   return (
     <div ref={vpRef}
       className={'viewport ' + (panning ? 'panning ' : '') + (tool === 'select' ? (spaceRef.current ? 'pan ' : '') : 'tool ')}
-      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
+      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
       onContextMenu={(e) => { e.preventDefault(); const hid = e.target.closest('[data-id]')?.dataset.id; if (hid) { setSelSingle(hid); setHoverId(null); setCommentFor(null); setMenu({ id: hid, x: e.clientX, y: e.clientY }) } else setMenu(null) }}
       onDoubleClick={(e) => {
         // edita clicando em QUALQUER ponto de dentro (área inteira, não só a borda)
@@ -577,7 +580,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
           if (o.type === 'sticky') return (<div key={o.id} data-id={o.id} className={'obj sticky' + selCls} style={{ left: o.x, top: o.y, width: o.w, height: o.h, background: o.color, transform: rotT }}>
             <Rich o={o} editing={editing === o.id} editRef={editRef} className="sticky-rt" style={textStyle(o)} ph="" onChange={(p) => livePatch(o.id, p)} onBlur={() => endEdit(o.id)} />{cbadge(o)}
           </div>)
-          if (o.type === 'text') return (<div key={o.id} data-id={o.id} className={'obj text-obj' + selCls} style={{ left: o.x, top: o.y, color: o.color, transform: rotT, ...textStyle(o) }}>
+          if (o.type === 'text') return (<div key={o.id} data-id={o.id} className={'obj text-obj' + selCls} style={{ left: o.x, top: o.y, width: o.w || 200, height: o.h || 50, color: o.color, transform: rotT, ...textStyle(o) }}>
             <Rich o={o} editing={editing === o.id} editRef={editRef} className="text-rt" ph="texto" onChange={(p) => livePatch(o.id, p)} onBlur={() => endEdit(o.id)} />{cbadge(o)}
           </div>)
           return (<div key={o.id} data-id={o.id} className={'obj shape' + selCls} style={{ left: o.x, top: o.y, width: o.w, height: o.h, '--sh': o.color, '--fill': o.color + '22', borderRadius: o.type === 'ellipse' ? '50%' : 10, transform: rotT }}>

@@ -59,14 +59,14 @@ h1,h2,h3{font-family:var(--font-serif);font-weight:600;letter-spacing:-.02em}
 .rt[contenteditable="true"]{pointer-events:auto}
 .rt:empty::before{content:attr(data-ph);color:var(--ink-mute);opacity:.6}
 .sticky-rt{width:100%;height:100%;overflow:hidden;overflow-wrap:anywhere;word-break:break-word;white-space:pre-wrap;font:inherit;color:inherit}
-.text-rt{min-width:30px;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font:inherit;color:inherit}
+.text-rt{width:100%;height:100%;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font:inherit;color:inherit;overflow:hidden}
 .shape{border:2.5px solid var(--sh);background:var(--fill);display:grid}
 .shape-text-wrap{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:12px 16px;overflow:hidden}
 .shape-text{max-width:100%;border:0;background:transparent;outline:none;cursor:text;text-align:center;
   color:var(--ink);font-family:inherit;font-size:15px;font-weight:600;line-height:1.3;
   overflow-wrap:anywhere;word-break:break-word;white-space:pre-wrap}
 .shape-text:empty::before{content:attr(data-ph);color:var(--ink-mute)}
-.text-obj{color:var(--ink);font-size:20px;line-height:1.3;min-width:40px;padding:2px 4px;font-weight:600;white-space:pre-wrap}
+.text-obj{color:var(--ink);font-size:20px;line-height:1.3;font-weight:600;padding:4px 6px;overflow:hidden}
 .obj.selected{outline:2px solid var(--purple-deep);outline-offset:2px}
 .obj.conn-target{outline:3px solid var(--purple);outline-offset:3px;box-shadow:0 0 0 4px rgba(179,159,218,.25)}
 
@@ -212,6 +212,14 @@ h1,h2,h3{font-family:var(--font-serif);font-weight:600;letter-spacing:-.02em}
 .side-label{display:flex;align-items:center;justify-content:space-between;color:var(--lav);font-family:var(--font-label);font-size:10px;
   font-weight:600;letter-spacing:.14em;text-transform:uppercase;padding:18px 12px 6px}
 .side-folders{flex:1;overflow-y:auto}
+.side-folder-row{display:flex;align-items:center;border-radius:10px;margin-bottom:2px}
+.side-folder-row.drop{outline:2px dashed var(--purple);outline-offset:-2px;background:rgba(179,159,218,.22)}
+.folder-btn{flex:1;min-width:0;margin-bottom:0}
+.side-folder-row.on .folder-btn{background:rgba(255,255,255,.16);color:#fff;font-weight:600}
+.folder-actions{display:none;gap:2px;padding-right:4px;flex:0 0 auto}
+.side-folder-row:hover .folder-actions{display:flex}
+.folder-actions button{width:24px;height:24px;border:0;border-radius:6px;background:transparent;color:var(--lav);cursor:pointer;font-size:12px}
+.folder-actions button:hover{background:rgba(255,255,255,.16);color:#fff}
 .side-empty{color:var(--lav-3);font-size:12px;padding:6px 12px}
 .mini{border:1px solid var(--line-white);background:rgba(255,255,255,.06);color:var(--lead);border-radius:8px;padding:3px 8px;font-family:var(--font-label);font-size:10.5px;font-weight:600;cursor:pointer;text-transform:uppercase;letter-spacing:.04em}
 .mini:hover{color:#fff;background:rgba(255,255,255,.12)}

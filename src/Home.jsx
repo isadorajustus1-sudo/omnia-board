@@ -34,6 +34,8 @@ export default function Home({ user, onOpenBoard }) {
   }
   const renameBoard = async (bd) => { const name = prompt('Renomear quadro:', bd.name); if (!name) return; await supabase.from('boards').update({ name }).eq('id', bd.id); setBoards(bs => bs.map(x => x.id === bd.id ? { ...x, name } : x)) }
   const delBoard = async (bd) => { if (!confirm('Apagar o quadro "' + bd.name + '"? Isso não tem volta.')) return; await supabase.from('boards').delete().eq('id', bd.id); setBoards(bs => bs.filter(x => x.id !== bd.id)) }
+  const renameFolder = async (f) => { const name = prompt('Renomear pasta:', f.name); if (!name || name === f.name) return; await supabase.from('folders').update({ name }).eq('id', f.id); setFolders(fs => fs.map(x => x.id === f.id ? { ...x, name } : x)) }
+  const delFolder = async (f) => { if (!confirm('Apagar a pasta "' + f.name + '"? Os quadros dela ficam sem pasta (não são apagados).')) return; await supabase.from('folders').delete().eq('id', f.id); setFolders(fs => fs.filter(x => x.id !== f.id)); setBoards(bs => bs.map(x => x.folder_id === f.id ? { ...x, folder_id: null } : x)); if (sel === f.id) setSel('all') }
   const moveTo = async (bd, folder_id) => {
     setMoveBoard(null); setDragOver(null)
     setBoards(bs => bs.map(x => x.id === bd.id ? { ...x, folder_id } : x)) // otimista
@@ -64,13 +66,19 @@ export default function Home({ user, onOpenBoard }) {
         <div className="side-label"><span>Clientes</span>{user.is_admin && <button className="mini" onClick={newFolder}>+ pasta</button>}</div>
         <div className="side-folders">
           {folders.map(f => (
-            <button key={f.id}
-              className={'side-item' + (sel === f.id ? ' on' : '') + (dragOver === f.id ? ' drop' : '')}
-              onClick={() => setSel(f.id)}
+            <div key={f.id}
+              className={'side-folder-row' + (sel === f.id ? ' on' : '') + (dragOver === f.id ? ' drop' : '')}
               onDragOver={(e) => { e.preventDefault(); setDragOver(f.id) }}
               onDragLeave={() => setDragOver(d => d === f.id ? null : d)}
-              onDrop={onDropFolder(f.id)}
-            >📁 {f.name}</button>
+              onDrop={onDropFolder(f.id)}>
+              <button className="side-item folder-btn" onClick={() => setSel(f.id)} onDoubleClick={() => user.is_admin && renameFolder(f)} title={f.name}>📁 {f.name}</button>
+              {user.is_admin && (
+                <span className="folder-actions">
+                  <button title="Renomear pasta" onClick={(e) => { e.stopPropagation(); renameFolder(f) }}>✏️</button>
+                  <button title="Apagar pasta" onClick={(e) => { e.stopPropagation(); delFolder(f) }}>🗑️</button>
+                </span>
+              )}
+            </div>
           ))}
           {!folders.length && <div className="side-empty">nenhuma pasta ainda</div>}
         </div>
