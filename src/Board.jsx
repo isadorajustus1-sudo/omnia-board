@@ -40,6 +40,13 @@ const CONNECTABLE = (t) => t === 'sticky' || t === 'rect' || t === 'ellipse'
 
 // rota ortogonal (tipo fluxograma) entre duas portas, saindo perpendicular de cada lado
 const SIDE_DIR = { t: [0, -1], b: [0, 1], l: [-1, 0], r: [1, 0], c: [0, 0] }
+// distância de um ponto a um segmento (world)
+const distToSeg = (p, a, b) => {
+  const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy
+  if (l2 === 0) return Math.hypot(p.x - a.x, p.y - a.y)
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2; t = Math.max(0, Math.min(1, t))
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+}
 const elbowPath = (p1, s1, p2, s2, mid) => {
   const stub = 26
   const d1 = SIDE_DIR[s1] || [0, 0], d2 = SIDE_DIR[s2] || [0, 0]
@@ -47,8 +54,18 @@ const elbowPath = (p1, s1, p2, s2, mid) => {
   const b = { x: p2.x + d2[0] * stub, y: p2.y + d2[1] * stub }
   const h1 = d1[0] !== 0, h2 = d2[0] !== 0
   const pts = [p1, a]
-  if (h1 && h2) { const mx = mid != null ? mid : (a.x + b.x) / 2; pts.push({ x: mx, y: a.y }, { x: mx, y: b.y }) }
-  else if (!h1 && !h2) { const my = mid != null ? mid : (a.y + b.y) / 2; pts.push({ x: a.x, y: my }, { x: b.x, y: my }) }
+  if (mid && typeof mid === 'object') {
+    // rota manual em Z passando pelo pivô {x,y} — segmentos vertical E horizontal móveis
+    if (h1) pts.push({ x: mid.x, y: a.y }, { x: mid.x, y: mid.y })
+    else pts.push({ x: a.x, y: mid.y }, { x: mid.x, y: mid.y })
+    if (h2) pts.push({ x: b.x, y: mid.y })
+    else pts.push({ x: mid.x, y: b.y })
+    pts.push(b, p2)
+    return pts
+  }
+  // rota automática (simples)
+  if (h1 && h2) { const mx = (a.x + b.x) / 2; pts.push({ x: mx, y: a.y }, { x: mx, y: b.y }) }
+  else if (!h1 && !h2) { const my = (a.y + b.y) / 2; pts.push({ x: a.x, y: my }, { x: b.x, y: my }) }
   else if (h1 && !h2) { pts.push({ x: b.x, y: a.y }) }
   else { pts.push({ x: a.x, y: b.y }) }
   pts.push(b, p2)
@@ -344,7 +361,14 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
         const ho = objsRef.current[hitId]
         if (!e.shiftKey && ho && ho.type === 'arrow') {
           setSelSingle(hitId)
-          if (ho.a1 && ho.a2 && (ho.shape || 'elbow') === 'elbow') drag.current = { mode: 'reroute', id: hitId, before: clone(ho) }
+          if (ho.a1 && ho.a2 && (ho.shape || 'elbow') === 'elbow') {
+            const g = connectorEnds(ho, objsRef.current)
+            const pts = elbowPath(g.p1, g.side1, g.p2, g.side2, ho.mid)
+            let axis = 'x', bd = Infinity
+            for (let i = 0; i < pts.length - 1; i++) { const A = pts[i], B = pts[i + 1]; const dd = distToSeg(wp, A, B); if (dd < bd) { bd = dd; axis = Math.abs(A.x - B.x) <= Math.abs(A.y - B.y) ? 'x' : 'y' } }
+            const mid0 = (ho.mid && typeof ho.mid === 'object') ? ho.mid : { x: (g.p1.x + g.p2.x) / 2, y: (g.p1.y + g.p2.y) / 2 }
+            drag.current = { mode: 'reroute', id: hitId, axis, mid0, before: clone(ho) }
+          }
           return
         }
         if (e.shiftKey) { setSelIds(prev => { const n = new Set(prev); n.has(hitId) ? n.delete(hitId) : n.add(hitId); return n }); return }
@@ -410,10 +434,9 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
     if (d.mode === 'reroute') {
       const o = objsRef.current[d.id]; if (!o || !o.a1 || !o.a2) return
       d.moved = true
-      const h1 = SIDE_DIR[o.a1.side][0] !== 0, h2 = SIDE_DIR[o.a2.side][0] !== 0
-      if (h1 && h2) livePatch(d.id, { mid: wp.x })
-      else if (!h1 && !h2) livePatch(d.id, { mid: wp.y })
-      else livePatch(d.id, { mid: h1 ? wp.x : wp.y })
+      const cur = (o.mid && typeof o.mid === 'object') ? o.mid : d.mid0
+      const m = { x: cur.x, y: cur.y }; m[d.axis] = d.axis === 'x' ? wp.x : wp.y
+      livePatch(d.id, { mid: m })
       return
     }
     if (d.mode === 'marquee') { const x = Math.min(d.sx, wp.x), y = Math.min(d.sy, wp.y), w = Math.abs(wp.x - d.sx), h = Math.abs(wp.y - d.sy); d.rect = { x, y, w, h }; setMarquee(d.rect); return }
@@ -649,7 +672,6 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
         <button onClick={() => zoomTo(clamp(view.z * 1.2, 0.15, 4))}>+</button>
         <button onClick={() => setView({ x: 0, y: 0, z: 1 })} title="Resetar">⤢</button>
       </div>
-      <div className="hintbar">Botão direito = menu · 2 cliques edita (selecione o texto → B/i ou Ctrl+B/Ctrl+I) · Delete apaga · Ctrl+Z desfaz</div>
 
       {editing && objs[editing] && (() => { const eo = objs[editing]; const bx = clamp(view.x + eo.x * view.z, 8, window.innerWidth - 130); const by = Math.max(8, view.y + eo.y * view.z - 46); return (
         <div className="fmtbar" style={{ left: bx, top: by }} onPointerDown={(e) => e.stopPropagation()} onContextMenu={(e) => e.preventDefault()}>
