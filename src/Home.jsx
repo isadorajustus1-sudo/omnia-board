@@ -69,7 +69,7 @@ export default function Home({ user, onOpenBoard }) {
           onDragLeave={() => setDragOver(d => d === 'root' ? null : d)}
           onDrop={onDropFolder(null)}
         >🗂️ Todos os quadros</button>
-        <div className="side-label"><span>Clientes</span>{user.is_admin && <button className="mini" onClick={newFolder}>+ pasta</button>}</div>
+        <div className="side-label"><span>Clientes</span><button className="mini" onClick={newFolder}>+ pasta</button></div>
         <div className="side-folders">
           {folders.map(f => (
             <div key={f.id}
@@ -77,8 +77,8 @@ export default function Home({ user, onOpenBoard }) {
               onDragOver={(e) => { e.preventDefault(); setDragOver(f.id) }}
               onDragLeave={() => setDragOver(d => d === f.id ? null : d)}
               onDrop={onDropFolder(f.id)}>
-              <button className="side-item folder-btn" onClick={() => setSel(f.id)} onDoubleClick={() => user.is_admin && renameFolder(f)} title={f.name}>📁 {f.name}</button>
-              {user.is_admin && (
+              <button className="side-item folder-btn" onClick={() => setSel(f.id)} onDoubleClick={() => (user.is_admin || f.created_by === user.id) && renameFolder(f)} title={f.name}>📁 {f.name}</button>
+              {(user.is_admin || f.created_by === user.id) && (
                 <span className="folder-actions">
                   <button title="Renomear pasta" onClick={(e) => { e.stopPropagation(); renameFolder(f) }}>✏️</button>
                   <button title="Apagar pasta" onClick={(e) => { e.stopPropagation(); delFolder(f) }}>🗑️</button>
