@@ -389,14 +389,19 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
     if (d.mode === 'connect' || d.mode === 'arrow') {
       const arw = objsRef.current[d.id]
       const tgt = topmostConnectableAt(wp, arw?.a1?.id, 40) // ímã: pega de longe
-      if (tgt && arw) { const side = nearestSide(tgt, { x: arw.x, y: arw.y }); const ap = anchorPoint(tgt, side); livePatch(d.id, { x2: ap.x, y2: ap.y }) }
-      else livePatch(d.id, { x2: wp.x, y2: wp.y })
+      if (tgt) {
+        const side = nearestSide(tgt, wp); const ap = anchorPoint(tgt, side) // ponto mais perto do CURSOR
+        if (Math.hypot(ap.x - wp.x, ap.y - wp.y) <= 34) { livePatch(d.id, { x2: ap.x, y2: ap.y }); d.snapSide = side } // ímã no ponto (fixo)
+        else { livePatch(d.id, { x2: wp.x, y2: wp.y }); d.snapSide = 'auto' } // no corpo => flutuante
+      } else { livePatch(d.id, { x2: wp.x, y2: wp.y }); d.snapSide = null }
       setConnTarget(p => p === (tgt?.id || null) ? p : (tgt?.id || null)); return
     }
     if (d.mode === 'reconnect') {
       const tgt = topmostConnectableAt(wp, null, 40)
-      if (d.which === 'start') { if (tgt) livePatch(d.id, { a1: { id: tgt.id, side: 'auto' } }); else livePatch(d.id, { a1: null, x: wp.x, y: wp.y }) }
-      else { if (tgt) livePatch(d.id, { a2: { id: tgt.id, side: 'auto' } }); else livePatch(d.id, { a2: null, x2: wp.x, y2: wp.y }) }
+      let side = 'auto'
+      if (tgt) { const s = nearestSide(tgt, wp); const ap = anchorPoint(tgt, s); if (Math.hypot(ap.x - wp.x, ap.y - wp.y) <= 34) side = s }
+      if (d.which === 'start') { if (tgt) livePatch(d.id, { a1: { id: tgt.id, side } }); else livePatch(d.id, { a1: null, x: wp.x, y: wp.y }) }
+      else { if (tgt) livePatch(d.id, { a2: { id: tgt.id, side } }); else livePatch(d.id, { a2: null, x2: wp.x, y2: wp.y }) }
       setConnTarget(p => p === (tgt?.id || null) ? p : (tgt?.id || null)); return
     }
     if (d.mode === 'reroute') {
@@ -461,7 +466,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
       const pt = { x: arw.x2, y: arw.y2 }
       const target = topmostConnectableAt(pt, arw.a1?.id, 18)
       if (target) {
-        const fin = { ...arw, a2: { id: target.id, side: 'auto' } }
+        const fin = { ...arw, a2: { id: target.id, side: d.snapSide || 'auto' } }
         applyOp({ t: 'up', o: fin }); pushHist({ t: 'del', id: arw.id }, { t: 'up', o: fin }); setSelSingle(arw.id)
       } else if (Math.hypot(arw.x2 - arw.x, arw.y2 - arw.y) < 12) {
         applyOp({ t: 'del', id: arw.id })
@@ -486,7 +491,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
       if (arw) {
         const endEl = topmostConnectableAt({ x: arw.x2, y: arw.y2 }, arw.a1?.id, 18)
         let fin = arw
-        if (endEl) fin = { ...arw, a2: { id: endEl.id, side: 'auto' } }
+        if (endEl) fin = { ...arw, a2: { id: endEl.id, side: d.snapSide || 'auto' } }
         applyOp({ t: 'up', o: fin }); pushHist({ t: 'del', id: arw.id }, { t: 'up', o: fin }); setSelSingle(arw.id)
       }
       setTool('select'); return
