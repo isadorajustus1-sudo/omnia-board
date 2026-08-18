@@ -55,11 +55,10 @@ const elbowPath = (p1, s1, p2, s2, mid) => {
   const h1 = d1[0] !== 0, h2 = d2[0] !== 0
   const pts = [p1, a]
   if (mid && typeof mid === 'object') {
-    // rota manual em Z passando pelo pivô {x,y} — segmentos vertical E horizontal móveis
-    if (h1) pts.push({ x: mid.x, y: a.y }, { x: mid.x, y: mid.y })
-    else pts.push({ x: a.x, y: mid.y }, { x: mid.x, y: mid.y })
-    if (h2) pts.push({ x: b.x, y: mid.y })
-    else pts.push({ x: mid.x, y: b.y })
+    // rota manual em Z passando pelo pivô {x,y} — 1 segmento vertical (x=mid.x) e 1 horizontal (y=mid.y), ambos móveis
+    const mx = mid.x, my = mid.y
+    if (h1) pts.push({ x: mx, y: a.y }, { x: mx, y: my }, { x: b.x, y: my })
+    else pts.push({ x: a.x, y: my }, { x: mx, y: my }, { x: mx, y: b.y })
     pts.push(b, p2)
     return pts
   }
@@ -321,6 +320,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
     const anchor = e.target?.dataset?.anchor
     const anchorId = e.target?.dataset?.aid
     const eph = e.target?.dataset?.eph
+    const seg = e.target?.dataset?.seg
     const hitId = e.target.closest('[data-id]')?.dataset.id
     vpRef.current.setPointerCapture(e.pointerId)
     setHoverId(null); setMenu(null); setCommentFor(null)
@@ -333,6 +333,15 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
     }
     if (e.button !== 0) return
 
+    // arrastar uma alça de segmento => reroteia só aquela reta (x = move vertical / y = move horizontal)
+    if (seg && selRef.current.size === 1) {
+      const id = [...selRef.current][0]; const o = objsRef.current[id]
+      if (o && o.type === 'arrow') {
+        const g = connectorEnds(o, objsRef.current)
+        const mid0 = (o.mid && typeof o.mid === 'object') ? o.mid : (() => { const d1 = SIDE_DIR[g.side1 || 'r'], d2 = SIDE_DIR[g.side2 || 'l']; const a = { x: g.p1.x + d1[0] * 26, y: g.p1.y + d1[1] * 26 }, b = { x: g.p2.x + d2[0] * 26, y: g.p2.y + d2[1] * 26 }; return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } })()
+        drag.current = { mode: 'reroute', id, axis: seg, mid0, before: clone(o) }; return
+      }
+    }
     // reconectar uma ponta de um conector selecionado
     if (eph && selRef.current.size === 1) {
       const id = [...selRef.current][0]; const o = objsRef.current[id]
@@ -359,18 +368,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
     if (tool === 'select') {
       if (hitId) {
         const ho = objsRef.current[hitId]
-        if (!e.shiftKey && ho && ho.type === 'arrow') {
-          setSelSingle(hitId)
-          if (ho.a1 && ho.a2 && (ho.shape || 'elbow') === 'elbow') {
-            const g = connectorEnds(ho, objsRef.current)
-            const pts = elbowPath(g.p1, g.side1, g.p2, g.side2, ho.mid)
-            let axis = 'x', bd = Infinity
-            for (let i = 0; i < pts.length - 1; i++) { const A = pts[i], B = pts[i + 1]; const dd = distToSeg(wp, A, B); if (dd < bd) { bd = dd; axis = Math.abs(A.x - B.x) <= Math.abs(A.y - B.y) ? 'x' : 'y' } }
-            const mid0 = (ho.mid && typeof ho.mid === 'object') ? ho.mid : { x: (g.p1.x + g.p2.x) / 2, y: (g.p1.y + g.p2.y) / 2 }
-            drag.current = { mode: 'reroute', id: hitId, axis, mid0, before: clone(ho) }
-          }
-          return
-        }
+        if (!e.shiftKey && ho && ho.type === 'arrow') { setSelSingle(hitId); return }
         if (e.shiftKey) { setSelIds(prev => { const n = new Set(prev); n.has(hitId) ? n.delete(hitId) : n.add(hitId); return n }); return }
         let ids
         if (selRef.current.has(hitId) && selRef.current.size > 1) ids = [...selRef.current]
@@ -560,8 +558,30 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
       const c1 = { x: p1.x + d1[0] * k, y: p1.y + d1[1] * k }, c2 = { x: p2.x + d2[0] * k, y: p2.y + d2[1] * k }
       return `M ${p1.x} ${p1.y} C ${c1.x} ${c1.y} ${c2.x} ${c2.y} ${p2.x} ${p2.y}`
     }
-    if (side1 && side2) return roundedPath(elbowPath(p1, side1, p2, side2, o.mid))
+    if (side1 && side2) {
+      const d1 = SIDE_DIR[side1] || [0, 0], d2 = SIDE_DIR[side2] || [0, 0]
+      const a = { x: p1.x + d1[0] * 26, y: p1.y + d1[1] * 26 }, b = { x: p2.x + d2[0] * 26, y: p2.y + d2[1] * 26 }
+      const mid = (o.mid && typeof o.mid === 'object') ? o.mid : { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+      return roundedPath(elbowPath(p1, side1, p2, side2, mid))
+    }
     return roundedPath([p1, p2])
+  }
+  const effMid = (o) => {
+    if (o.mid && typeof o.mid === 'object') return o.mid
+    const g = connectorEnds(o, objs); const d1 = SIDE_DIR[g.side1 || 'r'], d2 = SIDE_DIR[g.side2 || 'l']
+    const a = { x: g.p1.x + d1[0] * 26, y: g.p1.y + d1[1] * 26 }, b = { x: g.p2.x + d2[0] * 26, y: g.p2.y + d2[1] * 26 }
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+  }
+  const elbowHandles = (o) => {
+    const g = connectorEnds(o, objs); const mid = effMid(o)
+    const pts = elbowPath(g.p1, g.side1, g.p2, g.side2, mid)
+    let vh = null, hh = null
+    for (let i = 0; i < pts.length - 1; i++) {
+      const A = pts[i], B = pts[i + 1]
+      if (Math.abs(A.x - B.x) < 0.5 && Math.abs(A.x - mid.x) < 0.5 && Math.abs(A.y - B.y) > 8) vh = { x: mid.x, y: (A.y + B.y) / 2 }
+      if (Math.abs(A.y - B.y) < 0.5 && Math.abs(A.y - mid.y) < 0.5 && Math.abs(A.x - B.x) > 8) hh = { x: (A.x + B.x) / 2, y: mid.y }
+    }
+    return { vh, hh }
   }
   const hoverObj = hoverId ? objs[hoverId] : null
   const anchObj = (hoverObj && CONNECTABLE(hoverObj.type)) ? hoverObj
@@ -631,6 +651,10 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
         {soleSel && soleSel.type === 'arrow' && (() => { const g = connectorEnds(soleSel, objs); return (<React.Fragment>
           <span className="eph" data-eph="start" style={{ left: g.p1.x, top: g.p1.y }} />
           <span className="eph" data-eph="end" style={{ left: g.p2.x, top: g.p2.y }} />
+        </React.Fragment>) })()}
+        {soleSel && soleSel.type === 'arrow' && (soleSel.shape || 'elbow') === 'elbow' && soleSel.a1 && soleSel.a2 && (() => { const H = elbowHandles(soleSel); return (<React.Fragment>
+          {H.vh && <span className="seg-h" data-seg="x" style={{ left: H.vh.x, top: H.vh.y }} />}
+          {H.hh && <span className="seg-h" data-seg="y" style={{ left: H.hh.x, top: H.hh.y }} />}
         </React.Fragment>) })()}
         {marquee && <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h }} />}
       </div>
