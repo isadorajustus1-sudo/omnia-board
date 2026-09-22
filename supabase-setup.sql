@@ -13,23 +13,13 @@ create table if not exists public.profiles (
   created_at timestamptz not null default now()
 );
 
--- cria o perfil no signup; Isadora vira admin automaticamente
-create or replace function public.handle_new_user()
-returns trigger language plpgsql security definer set search_path = public as $$
-begin
-  insert into public.profiles (id, email, name, is_admin)
-  values (
-    new.id, new.email,
-    coalesce(new.raw_user_meta_data->>'name', split_part(new.email, '@', 1)),
-    lower(new.email) = 'isadora@omniamarketing.com.br'
-  )
-  on conflict (id) do nothing;
-  return new;
-end; $$;
-
-drop trigger if exists on_auth_user_created on auth.users;
-create trigger on_auth_user_created
-  after insert on auth.users for each row execute function public.handle_new_user();
+-- O perfil de quem entra é criado pela edge function `board-access`, no
+-- login. Antes existia aqui um gatilho `on_auth_user_created` em auth.users,
+-- mas este projeto é compartilhado com o Post Planner, que tem um gatilho de
+-- mesmo nome: o último a rodar apagava o outro e quebrava o cadastro do
+-- outro app. Hoje quem popula as duas tabelas é
+-- `public.handle_new_user_all_apps()`, no repo do Post Planner.
+-- NÃO recriar um gatilho com esse nome aqui.
 
 -- helpers (SECURITY DEFINER = ignoram RLS por dentro, evitam recursão)
 create or replace function public.is_admin()
