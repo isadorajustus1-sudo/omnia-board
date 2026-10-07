@@ -160,10 +160,37 @@ function CursorIcon() {
 
 const escapeHtml = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
+// Endereço escrito no texto vira link clicável na hora de mostrar. O que fica
+// guardado continua sendo o texto puro, então editar não muda nada.
+const URL_NO_TEXTO = /((?:https?:\/\/|www\.)[^\s<>"']*[^\s<>"'.,;:!?)\]}])/gi
+function comLinks(html) {
+  if (!html || !/https?:\/\/|www\./i.test(html)) return html
+  const caixa = document.createElement('div')
+  caixa.innerHTML = html
+  const andar = document.createTreeWalker(caixa, NodeFilter.SHOW_TEXT)
+  const textos = []
+  while (andar.nextNode()) if (!andar.currentNode.parentElement.closest('a')) textos.push(andar.currentNode)
+  for (const no of textos) {
+    const partes = no.nodeValue.split(URL_NO_TEXTO)
+    if (partes.length < 2) continue
+    const frag = document.createDocumentFragment()
+    partes.forEach((parte, i) => {
+      if (i % 2 === 0) { if (parte) frag.appendChild(document.createTextNode(parte)); return }
+      const link = document.createElement('a')
+      link.href = /^www\./i.test(parte) ? 'https://' + parte : parte
+      link.target = '_blank'; link.rel = 'noopener noreferrer'; link.draggable = false
+      link.textContent = parte
+      frag.appendChild(link)
+    })
+    no.replaceWith(frag)
+  }
+  return caixa.innerHTML
+}
+
 // editor de texto RICO (negrito/itálico por seleção) usado por sticky, texto e formas
 function Rich({ o, editing, editRef, className, style, ph, onChange, onBlur }) {
   const ref = useRef(null)
-  const fill = () => { const el = ref.current; if (!el) return; const h = o.html != null ? o.html : escapeHtml(o.text); if (el.innerHTML !== h) el.innerHTML = h }
+  const fill = () => { const el = ref.current; if (!el) return; const cru = o.html != null ? o.html : escapeHtml(o.text); const h = editing ? cru : comLinks(cru); if (el.innerHTML !== h) el.innerHTML = h }
   useEffect(() => { if (!editing) fill() }, [o.html, o.text, editing]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!editing) return
@@ -435,6 +462,8 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
   // elementos que servem de referência pro alinhamento (tudo que tem caixa e não está sendo movido)
   const snapOthers = (skip) => Object.values(objsRef.current).filter(o => !skip.has(o.id) && o.type !== 'arrow' && o.type !== 'pen').map(bboxOf)
 
+  const linkDown = useRef(null)
+  const linkTimer = useRef(null)
   const onPointerDown = (e) => {
     // clicando/arrastando DENTRO de um texto em edição => deixa a seleção de texto nativa (não mexe no elemento)
     if (e.target.closest && e.target.closest('[contenteditable="true"]')) return
@@ -446,6 +475,12 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
     const eph = e.target?.dataset?.eph
     const seg = e.target?.dataset?.seg
     const hitId = e.target.closest('[data-id]')?.dataset.id
+    // Link dentro do texto: guarda onde apertou, pra abrir se for clique e não arraste.
+    const link = e.button === 0 && tool === 'select' ? e.target.closest('.rt a') : null
+    clearTimeout(linkTimer.current)
+    // Sem isso o link pega o foco, e o clique duplo pra editar perde o foco logo em seguida.
+    if (link) e.preventDefault()
+    linkDown.current = link ? { href: link.href, x: e.clientX, y: e.clientY } : null
     vpRef.current.setPointerCapture(e.pointerId)
     setHoverId(null); setMenu(null); setCommentFor(null)
 
@@ -615,7 +650,12 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
     if (d.mode === 'pen') { const o = objsRef.current[d.id]; if (!o) return; livePatch(d.id, { points: [...o.points, [wp.x, wp.y]] }); return }
   }
 
-  const onPointerUp = () => {
+  const onPointerUp = (e) => {
+    const lk = linkDown.current; linkDown.current = null
+    if (lk && e && e.type === 'pointerup' && Math.hypot(e.clientX - lk.x, e.clientY - lk.y) <= 4) {
+      // Espera um instante: se vier o segundo clique, é clique duplo pra editar.
+      linkTimer.current = setTimeout(() => window.open(lk.href, '_blank', 'noopener,noreferrer'), 280)
+    }
     const d = drag.current; drag.current = null; setPanning(false); setConnTarget(null); setGuides(g => g.length ? [] : g)
     if (!d) return
     if (d.mode === 'marquee') {
@@ -740,6 +780,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
       onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
       onContextMenu={(e) => { e.preventDefault(); const hid = e.target.closest('[data-id]')?.dataset.id; if (hid) { setSelSingle(hid); setHoverId(null); setCommentFor(null); setMenu({ id: hid, x: e.clientX, y: e.clientY }) } else setMenu(null) }}
       onDoubleClick={(e) => {
+        clearTimeout(linkTimer.current)
         // edita clicando em QUALQUER ponto de dentro (área inteira, não só a borda)
         const wp = toWorld(e.clientX, e.clientY)
         const all = Object.values(objsRef.current).filter(o => HAS_TEXT(o.type))

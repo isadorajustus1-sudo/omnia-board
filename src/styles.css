@@ -317,3 +317,6 @@ h1,h2,h3{font-family:var(--font-serif);font-weight:600;letter-spacing:-.02em}
 .fmtbar .connsw{align-self:center;flex:none}
 .aviso{position:fixed;left:50%;bottom:76px;transform:translateX(-50%);z-index:60;background:var(--plum-900);color:#fff;
   border:1px solid var(--line-white);border-radius:999px;padding:9px 18px;font-size:13px;font-family:var(--font-sans);box-shadow:0 8px 24px rgba(0,0,0,.25)}
+
+/* link dentro do texto de um elemento */
+.rt a{pointer-events:auto;-webkit-user-drag:none;color:inherit;text-decoration:underline;text-underline-offset:2px;cursor:pointer}
