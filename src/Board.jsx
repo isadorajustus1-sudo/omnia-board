@@ -4,7 +4,12 @@ import { supabase } from './supabase'
 const uid = () => Math.random().toString(36).slice(2, 9)
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 const clone = (o) => JSON.parse(JSON.stringify(o))
-const NOTE_COLORS = ['#ffd94d', '#ffb26b', '#7ee787', '#79c0ff', '#d2a8ff', '#ff7eb6', '#e6edf3']
+const NOTE_COLORS = ['#ffd94d', '#ffb26b', '#7ee787', '#79c0ff', '#d2a8ff', '#ff7eb6', '#e6edf3', '#111111']
+// cores de letra (a preta vem primeiro)
+const TEXT_COLORS = ['#000000', '#2b2333', '#8a76ac', '#c0392b', '#1f6feb', '#1a7f37', '#ffffff']
+// marca que o Ctrl+C do quadro deixa na área de transferência, pra colagem saber que são objetos daqui
+const CLIP_MARK = 'omnia-board:objetos'
+const BUCKET = 'post-media'
 const PEER_COLORS = ['#ff7eb6', '#7ee787', '#79c0ff', '#ffd94d', '#d2a8ff', '#ff9a5a', '#5eead4', '#f778ba']
 const CONN_COLORS = ['#8a76ac', '#2b2333', '#c0392b', '#79c0ff', '#7ee787']
 // post-it (sticky) fica por último na barra
@@ -17,6 +22,7 @@ const TOOLS = [
 const bboxOf = (o) => {
   if (o.type === 'arrow') return { x: Math.min(o.x, o.x2), y: Math.min(o.y, o.y2), w: Math.abs(o.x2 - o.x), h: Math.abs(o.y2 - o.y) }
   if (o.type === 'pen') { const xs = o.points.map(p => p[0]), ys = o.points.map(p => p[1]); const x = Math.min(...xs), y = Math.min(...ys); return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y } }
+  if (o.type === 'text' && o.w) return { x: o.x, y: o.y, w: o.w, h: o.h || 50 } // a caixa que a pessoa vê e redimensiona
   if (o.type === 'text') { const lines = String(o.text || 'texto').split('\n'); const w = Math.max(60, Math.max(...lines.map(l => l.length)) * 11); return { x: o.x, y: o.y, w, h: lines.length * 26 } }
   return { x: o.x, y: o.y, w: o.w, h: o.h }
 }
@@ -36,7 +42,35 @@ const nearestSide = (el, from) => {
   for (const s of ['t', 'r', 'b', 'l']) { const p = anchorPoint(el, s); const d = (p.x - from.x) ** 2 + (p.y - from.y) ** 2; if (d < bd) { bd = d; best = s } }
   return best
 }
-const CONNECTABLE = (t) => t === 'sticky' || t === 'rect' || t === 'ellipse'
+const CONNECTABLE = (t) => t === 'sticky' || t === 'rect' || t === 'ellipse' || t === 'image'
+const HAS_TEXT = (t) => t === 'sticky' || t === 'rect' || t === 'ellipse' || t === 'text'
+
+// Linhas de alinhamento (como no Miro): compara as bordas e o centro da caixa
+// que está sendo movida com as dos outros elementos. Dentro da tolerância, a
+// caixa gruda e a linha tracejada aparece.
+const snapBox = (box, others, tol) => {
+  let bx = null, by = null
+  const xs = [box.x, box.x + box.w / 2, box.x + box.w], ys = [box.y, box.y + box.h / 2, box.y + box.h]
+  for (const o of others) {
+    const ox = [o.x, o.x + o.w / 2, o.x + o.w], oy = [o.y, o.y + o.h / 2, o.y + o.h]
+    for (const a of xs) for (const b of ox) { const dd = b - a; if (Math.abs(dd) <= tol && (!bx || Math.abs(dd) < Math.abs(bx.d))) bx = { d: dd, at: b, o } }
+    for (const a of ys) for (const b of oy) { const dd = b - a; if (Math.abs(dd) <= tol && (!by || Math.abs(dd) < Math.abs(by.d))) by = { d: dd, at: b, o } }
+  }
+  const nb = { x: box.x + (bx ? bx.d : 0), y: box.y + (by ? by.d : 0), w: box.w, h: box.h }
+  const guides = []
+  if (bx) guides.push({ v: true, at: bx.at, a: Math.min(nb.y, bx.o.y) - 14, b: Math.max(nb.y + nb.h, bx.o.y + bx.o.h) + 14 })
+  if (by) guides.push({ v: false, at: by.at, a: Math.min(nb.x, by.o.x) - 14, b: Math.max(nb.x + nb.w, by.o.x + by.o.w) + 14 })
+  return { dx: bx ? bx.d : 0, dy: by ? by.d : 0, guides }
+}
+// borda única (redimensionar): acha a linha de outro elemento mais perto de `val`
+const snapEdge = (val, others, vertical, tol) => {
+  let best = null
+  for (const o of others) {
+    const ls = vertical ? [o.x, o.x + o.w / 2, o.x + o.w] : [o.y, o.y + o.h / 2, o.y + o.h]
+    for (const l of ls) if (Math.abs(l - val) <= tol && (!best || Math.abs(l - val) < Math.abs(best.at - val))) best = { at: l, o }
+  }
+  return best
+}
 
 // rota ortogonal (tipo fluxograma) entre duas portas, saindo perpendicular de cada lado
 const SIDE_DIR = { t: [0, -1], b: [0, 1], l: [-1, 0], r: [1, 0], c: [0, 0] }
@@ -107,6 +141,15 @@ function OmniaLogo() {
   return <img className="ob-img" src="/logo.png" alt="omnia.board" draggable="false" />
 }
 
+function AlignIcon({ a }) {
+  const w = [14, 9, 12], x = (len) => a === 'left' ? 2 : a === 'right' ? 16 - len : (18 - len) / 2
+  return (
+    <svg width="18" height="16" viewBox="0 0 18 16" style={{ display: 'block' }}>
+      {w.map((len, i) => <rect key={i} x={x(len)} y={2 + i * 5} width={len} height="2" rx="1" fill="currentColor" />)}
+    </svg>
+  )
+}
+
 function CursorIcon() {
   return (
     <svg width="17" height="17" viewBox="0 0 22 22" style={{ display: 'block' }}>
@@ -134,6 +177,13 @@ function Rich({ o, editing, editRef, className, style, ph, onChange, onBlur }) {
     <div ref={ref} className={'rt ' + className} contentEditable={editing} suppressContentEditableWarning
       data-ph={ph || ''} style={style}
       onInput={(e) => onChange({ html: e.currentTarget.innerHTML, text: e.currentTarget.innerText })}
+      onPaste={(e) => {
+        // Texto copiado de fora (Word, site, e-mail) vem com fundo branco e fonte
+        // de lá. Entra só o texto, no estilo do próprio elemento.
+        e.preventDefault(); e.stopPropagation()
+        const txt = e.clipboardData.getData('text/plain')
+        if (txt) document.execCommand('insertText', false, txt)
+      }}
       onBlur={onBlur} />
   )
 }
@@ -158,6 +208,8 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
   const [menu, setMenu] = useState(null)
   const [commentFor, setCommentFor] = useState(null)
   const [commentText, setCommentText] = useState('')
+  const [guides, setGuides] = useState([])
+  const [aviso, setAviso] = useState(null)
 
   const vpRef = useRef(null)
   const objsRef = useRef(objs); useEffect(() => { objsRef.current = objs }, [objs])
@@ -171,6 +223,8 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
   const editBefore = useRef(null)
   const hist = useRef({ undo: [], redo: [] })
   const clip = useRef([])
+  const editingRef = useRef(editing); useEffect(() => { editingRef.current = editing }, [editing])
+  const lastWp = useRef(null)
 
   const scheduleSave = useCallback(() => {
     clearTimeout(saveT.current)
@@ -243,16 +297,17 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
       if (mod && e.key.toLowerCase() === 'z') { if (editing) return; e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); return }
       if (mod && e.key.toLowerCase() === 'y') { if (editing) return; e.preventDefault(); doRedo(); return }
       if (mod && e.key.toLowerCase() === 'a') { if (editing) return; e.preventDefault(); setSelIds(new Set(Object.keys(objsRef.current))); return }
-      if (mod && e.key.toLowerCase() === 'c' && !editing) { const ids = [...selRef.current].filter(id => objsRef.current[id]); if (ids.length) clip.current = ids.map(id => clone(objsRef.current[id])); return }
-      if (mod && e.key.toLowerCase() === 'v' && !editing) {
-        e.preventDefault(); const src = clip.current
-        if (src && src.length) {
-          const idMap = {}; src.forEach(o => { idMap[o.id] = uid() })
-          const news = src.map(o => { const n = clone(o); n.id = idMap[o.id]; if (n.x != null) n.x += 24; if (n.y != null) n.y += 24; if (n.x2 != null) n.x2 += 24; if (n.y2 != null) n.y2 += 24; if (n.points) n.points = n.points.map(([px, py]) => [px + 24, py + 24]); if (n.type === 'arrow') { if (n.a1 && idMap[n.a1.id]) n.a1 = { ...n.a1, id: idMap[n.a1.id] }; if (n.a2 && idMap[n.a2.id]) n.a2 = { ...n.a2, id: idMap[n.a2.id] } } return n })
-          const ups = news.map(o => ({ t: 'up', o })); applyOp({ t: 'batch', ops: ups }); pushHist({ t: 'batch', ops: news.map(o => ({ t: 'del', id: o.id })) }, { t: 'batch', ops: ups }); setSelIds(new Set(news.map(o => o.id)))
+      if (mod && e.key.toLowerCase() === 'c' && !editing) {
+        const ids = [...selRef.current].filter(id => objsRef.current[id])
+        if (ids.length) {
+          clip.current = ids.map(id => clone(objsRef.current[id]))
+          // troca o que estava na área de transferência (um print antigo, por exemplo) pela marca do quadro
+          try { navigator.clipboard?.writeText(CLIP_MARK).catch(() => {}) } catch (err) {}
         }
         return
       }
+      // Ctrl+V é tratado no evento "paste" (mais abaixo): é ele que entrega a imagem do print
+      if (mod && e.key.toLowerCase() === 'v') return
       if (editing && mod && (e.key.toLowerCase() === 'b' || e.key.toLowerCase() === 'i')) {
         e.preventDefault(); document.execCommand(e.key.toLowerCase() === 'b' ? 'bold' : 'italic', false)
         const el = editRef.current; if (el) livePatch(editing, { html: el.innerHTML, text: el.innerText }); return
@@ -285,6 +340,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
         return
       }
       if (e.key === 'Escape') { setSelIds(new Set()); setEditing(null); setMenu(null); setCommentFor(null); return }
+      if (mod || e.altKey) return
       if (e.key === 'v') setTool('select'); if (e.key === 'n') setTool('sticky'); if (e.key === 't') setTool('text')
     }
     const ku = (e) => { if (e.code === 'Space') spaceRef.current = false }
@@ -293,6 +349,61 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
   }, [editing, applyOp, doUndo, doRedo, livePatch])
 
   useEffect(() => { if (editing && editRef.current) editRef.current.focus() }, [editing])
+
+  // onde colar: embaixo do mouse, ou no meio da tela se o mouse ainda não passou pelo quadro
+  const pastePoint = () => {
+    if (lastWp.current) return lastWp.current
+    const r = vpRef.current.getBoundingClientRect(); const v = viewRef.current
+    return { x: (r.width / 2 - v.x) / v.z, y: (r.height / 2 - v.y) / v.z }
+  }
+  const pasteClip = () => {
+    const src = clip.current; if (!src || !src.length) return
+    const idMap = {}; src.forEach(o => { idMap[o.id] = uid() })
+    const news = src.map(o => { const n = clone(o); n.id = idMap[o.id]; if (n.x != null) n.x += 24; if (n.y != null) n.y += 24; if (n.x2 != null) n.x2 += 24; if (n.y2 != null) n.y2 += 24; if (n.points) n.points = n.points.map(([px, py]) => [px + 24, py + 24]); if (n.type === 'arrow') { if (n.a1 && idMap[n.a1.id]) n.a1 = { ...n.a1, id: idMap[n.a1.id] }; if (n.a2 && idMap[n.a2.id]) n.a2 = { ...n.a2, id: idMap[n.a2.id] } } return n })
+    const ups = news.map(o => ({ t: 'up', o })); applyOp({ t: 'batch', ops: ups }); pushHist({ t: 'batch', ops: news.map(o => ({ t: 'del', id: o.id })) }, { t: 'batch', ops: ups }); setSelIds(new Set(news.map(o => o.id)))
+    clip.current = news.map(o => clone(o)) // colar de novo desloca mais um passo
+  }
+  // Print (ou qualquer imagem) colado com Ctrl+V: sobe pro Storage e vira um elemento do quadro.
+  // A imagem fica no endereço, e não dentro do quadro, pra não pesar o salvamento nem o tempo real.
+  const pasteImage = async (file) => {
+    const dims = await new Promise((res) => { const im = new Image(); const u = URL.createObjectURL(file); im.onload = () => { res({ w: im.naturalWidth, h: im.naturalHeight }); URL.revokeObjectURL(u) }; im.onerror = () => { res(null); URL.revokeObjectURL(u) }; im.src = u })
+    if (!dims || !dims.w) { setAviso('Não deu pra ler a imagem colada.'); setTimeout(() => setAviso(null), 4000); return }
+    const at = pastePoint()
+    const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/[^a-z0-9]/g, '')
+    const path = `board/${boardId}/${Date.now()}-${uid()}.${ext || 'png'}`
+    setAviso('Enviando a imagem…')
+    const { error } = await supabase.storage.from(BUCKET).upload(path, file, { contentType: file.type || 'image/png', cacheControl: '31536000', upsert: false })
+    if (error) { setAviso('Não deu pra colar a imagem: ' + error.message); setTimeout(() => setAviso(null), 6000); return }
+    const src = supabase.storage.from(BUCKET).getPublicUrl(path).data.publicUrl
+    const k = Math.min(1, 560 / dims.w); const w = Math.round(dims.w * k), h = Math.round(dims.h * k)
+    const o = { id: uid(), type: 'image', x: at.x - w / 2, y: at.y - h / 2, w, h, src, rot: 0 }
+    applyOp({ t: 'up', o }); pushHist({ t: 'del', id: o.id }, { t: 'up', o }); setSelSingle(o.id); setTool('select'); setAviso(null)
+  }
+  const pasteRef = useRef(null)
+  pasteRef.current = (e) => {
+    if (editingRef.current) return // dentro de um texto em edição quem cuida é o próprio editor
+    const tg = e.target; if (tg && (tg.tagName === 'TEXTAREA' || tg.tagName === 'INPUT')) return
+    const cd = e.clipboardData; if (!cd) return
+    const img = [...(cd.items || [])].find(i => i.kind === 'file' && i.type.startsWith('image/'))
+    if (img) { const file = img.getAsFile(); if (file) { e.preventDefault(); pasteImage(file); return } }
+    const txt = cd.getData('text/plain') || ''
+    if (clip.current.length && (!txt || txt === CLIP_MARK)) { e.preventDefault(); pasteClip(); return }
+    if (txt.trim() && txt !== CLIP_MARK) {
+      // texto copiado de fora vira um elemento de texto, sem o estilo de onde veio
+      e.preventDefault(); const at = pastePoint(); const limpo = txt.trim(); const lines = limpo.split('\n')
+      const w = clamp(Math.max(...lines.map(l => l.length)) * 11 + 20, 120, 520)
+      const nLinhas = lines.reduce((n, l) => n + Math.max(1, Math.ceil(l.length * 11 / w)), 0)
+      const o = { id: uid(), type: 'text', x: at.x - w / 2, y: at.y - 20, w, h: Math.max(50, nLinhas * 27 + 12), text: limpo, html: escapeHtml(limpo), color: '#2b2333', rot: 0 }
+      applyOp({ t: 'up', o }); pushHist({ t: 'del', id: o.id }, { t: 'up', o }); setSelSingle(o.id); setTool('select')
+      return
+    }
+    if (clip.current.length) { e.preventDefault(); pasteClip() }
+  }
+  useEffect(() => {
+    const onPaste = (e) => pasteRef.current && pasteRef.current(e)
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+  }, [])
 
   const startEdit = (id) => { const o = objsRef.current[id]; editBefore.current = o ? clone(o) : null; editRef.current = null; setEditing(id) }
   const endEdit = (id) => { setEditing(null); const after = objsRef.current[id]; if (after) { chanRef.current?.send({ type: 'broadcast', event: 'op', payload: { t: 'up', o: after } }); scheduleSave(); histChange(editBefore.current, after) } editBefore.current = null }
@@ -310,6 +421,19 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
     return null
   }
   const applyFmt = (cmd) => { document.execCommand(cmd, false); const el = editRef.current; if (el && editing) livePatch(editing, { html: el.innerHTML, text: el.innerText }) }
+  // cor da letra: com um trecho selecionado, pinta só o trecho; sem seleção, pinta o texto todo do elemento
+  const letterColor = (id, c) => {
+    const el = editRef.current; const sel = window.getSelection()
+    if (editing === id && el && sel && !sel.isCollapsed && el.contains(sel.anchorNode)) {
+      document.execCommand('styleWithCSS', false, true); document.execCommand('foreColor', false, c)
+      livePatch(id, { html: el.innerHTML, text: el.innerText }); return
+    }
+    mutate(id, o => o.type === 'text' ? { ...o, color: c } : { ...o, tcolor: c })
+  }
+  const alignOf = (o) => o.align || (o.type === 'rect' || o.type === 'ellipse' ? 'center' : 'left')
+  const setAlign = (id, a) => mutate(id, o => ({ ...o, align: a }))
+  // elementos que servem de referência pro alinhamento (tudo que tem caixa e não está sendo movido)
+  const snapOthers = (skip) => Object.values(objsRef.current).filter(o => !skip.has(o.id) && o.type !== 'arrow' && o.type !== 'pen').map(bboxOf)
 
   const onPointerDown = (e) => {
     // clicando/arrastando DENTRO de um texto em edição => deixa a seleção de texto nativa (não mexe no elemento)
@@ -362,7 +486,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
     // alça de redimensionar (canto)
     if (handle && selRef.current.size === 1) {
       const id = [...selRef.current][0]; const o = objsRef.current[id]
-      drag.current = { mode: 'resize', id, corner: handle, sx: wp.x, sy: wp.y, orig: { x: o.x, y: o.y, w: o.w || 200, h: o.h || 50 }, before: clone(o) }; return
+      drag.current = { mode: 'resize', id, corner: handle, sx: wp.x, sy: wp.y, orig: { x: o.x, y: o.y, w: o.w || 200, h: o.h || 50 }, before: clone(o), others: o.rot ? [] : snapOthers(new Set([id])) }; return
     }
 
     if (tool === 'select') {
@@ -375,7 +499,10 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
         else { ids = [hitId]; setSelSingle(hitId) }
         const origins = {}, befores = {}
         ids.forEach(id => { const o = objsRef.current[id]; if (!o) return; const g = { x: o.x, y: o.y }; if (o.x2 != null) { g.x2 = o.x2; g.y2 = o.y2 } if (o.points) g.points = o.points; origins[id] = g; befores[id] = clone(o) })
-        drag.current = { mode: 'move', ids, origins, befores, sx: wp.x, sy: wp.y, moved: false }
+        // caixa do conjunto que vai ser movido, pra alinhar com os outros elementos
+        const caixas = ids.map(id => objsRef.current[id]).filter(o => o && o.type !== 'arrow' && o.type !== 'pen' && !o.rot).map(bboxOf)
+        const box0 = caixas.length ? (() => { const x = Math.min(...caixas.map(b => b.x)), y = Math.min(...caixas.map(b => b.y)); return { x, y, w: Math.max(...caixas.map(b => b.x + b.w)) - x, h: Math.max(...caixas.map(b => b.y + b.h)) - y } })() : null
+        drag.current = { mode: 'move', ids, origins, befores, sx: wp.x, sy: wp.y, moved: false, box0, others: snapOthers(new Set(ids)) }
         return
       }
       // vazio com botão esquerdo => seleção por retângulo (marquee)
@@ -401,7 +528,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
   }
 
   const onPointerMove = (e) => {
-    const wp = toWorld(e.clientX, e.clientY); sendCursor(wp.x, wp.y)
+    const wp = toWorld(e.clientX, e.clientY); sendCursor(wp.x, wp.y); lastWp.current = wp
     const d = drag.current
     if (d && e.buttons === 0) { onPointerUp(); return } // botão já foi solto: encerra o arraste na hora
     if (!d) {
@@ -439,7 +566,12 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
     }
     if (d.mode === 'marquee') { const x = Math.min(d.sx, wp.x), y = Math.min(d.sy, wp.y), w = Math.abs(wp.x - d.sx), h = Math.abs(wp.y - d.sy); d.rect = { x, y, w, h }; setMarquee(d.rect); return }
     if (d.mode === 'move') {
-      const dx = wp.x - d.sx, dy = wp.y - d.sy; if (dx || dy) d.moved = true
+      let dx = wp.x - d.sx, dy = wp.y - d.sy; if (dx || dy) d.moved = true
+      // alinhamento: gruda nas bordas e no centro dos outros elementos (Alt desliga)
+      if (d.box0 && !e.altKey) {
+        const s = snapBox({ x: d.box0.x + dx, y: d.box0.y + dy, w: d.box0.w, h: d.box0.h }, d.others, 6 / viewRef.current.z)
+        dx += s.dx; dy += s.dy; setGuides(s.guides)
+      } else setGuides(g => g.length ? [] : g)
       d.ids.forEach(id => {
         const o = objsRef.current[id]; if (!o) return; const g = d.origins[id]; if (!g) return
         let p
@@ -457,6 +589,21 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
       if (c.includes('w')) { w = Math.max(24, d.orig.w - dx); x = d.orig.x + (d.orig.w - w) }
       if (c.includes('s')) { h = Math.max(24, d.orig.h + dy); y = d.orig.y }
       if (c.includes('n')) { h = Math.max(24, d.orig.h - dy); y = d.orig.y + (d.orig.h - h) }
+      const ro = objsRef.current[d.id]
+      if (ro && ro.type === 'image') {
+        // imagem não deforma: a altura acompanha a largura
+        const ratio = d.orig.w / d.orig.h; h = w / ratio
+        if (c.includes('n')) y = d.orig.y + (d.orig.h - h)
+        setGuides(g => g.length ? [] : g)
+      } else if (d.others && d.others.length && !e.altKey) {
+        const tol = 6 / viewRef.current.z; const gs = []
+        const right = x + w, bottom = y + h
+        if (c.includes('e')) { const s = snapEdge(right, d.others, true, tol); if (s && s.at - x >= 24) { w = s.at - x; gs.push({ v: true, at: s.at, a: Math.min(y, s.o.y) - 14, b: Math.max(y + h, s.o.y + s.o.h) + 14 }) } }
+        if (c.includes('w')) { const s = snapEdge(x, d.others, true, tol); if (s && right - s.at >= 24) { x = s.at; w = right - s.at; gs.push({ v: true, at: s.at, a: Math.min(y, s.o.y) - 14, b: Math.max(y + h, s.o.y + s.o.h) + 14 }) } }
+        if (c.includes('s')) { const s = snapEdge(bottom, d.others, false, tol); if (s && s.at - y >= 24) { h = s.at - y; gs.push({ v: false, at: s.at, a: Math.min(x, s.o.x) - 14, b: Math.max(x + w, s.o.x + s.o.w) + 14 }) } }
+        if (c.includes('n')) { const s = snapEdge(y, d.others, false, tol); if (s && bottom - s.at >= 24) { y = s.at; h = bottom - s.at; gs.push({ v: false, at: s.at, a: Math.min(x, s.o.x) - 14, b: Math.max(x + w, s.o.x + s.o.w) + 14 }) } }
+        setGuides(gs)
+      }
       livePatch(d.id, { x, y, w, h }); return
     }
     if (d.mode === 'rotate') {
@@ -469,7 +616,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
   }
 
   const onPointerUp = () => {
-    const d = drag.current; drag.current = null; setPanning(false); setConnTarget(null)
+    const d = drag.current; drag.current = null; setPanning(false); setConnTarget(null); setGuides(g => g.length ? [] : g)
     if (!d) return
     if (d.mode === 'marquee') {
       const r = d.rect
@@ -546,7 +693,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
 
   const selArr = [...selIds]
   const soleSel = selArr.length === 1 ? objs[selArr[0]] : null
-  const showFrame = soleSel && (soleSel.type === 'sticky' || soleSel.type === 'rect' || soleSel.type === 'ellipse' || soleSel.type === 'text')
+  const showFrame = soleSel && (HAS_TEXT(soleSel.type) || soleSel.type === 'image')
   const arrowGeom = (o) => connectorEnds(o, objs)
   const arrowD = (o) => {
     const { p1, p2, side1, side2 } = connectorEnds(o, objs)
@@ -595,7 +742,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
       onDoubleClick={(e) => {
         // edita clicando em QUALQUER ponto de dentro (área inteira, não só a borda)
         const wp = toWorld(e.clientX, e.clientY)
-        const all = Object.values(objsRef.current).filter(o => o.type !== 'arrow' && o.type !== 'pen')
+        const all = Object.values(objsRef.current).filter(o => HAS_TEXT(o.type))
         for (let i = all.length - 1; i >= 0; i--) {
           const o = all[i], b = bboxOf(o)
           if (wp.x >= b.x && wp.x <= b.x + b.w && wp.y >= b.y && wp.y <= b.y + b.h) { setSelSingle(o.id); startEdit(o.id); break }
@@ -621,13 +768,16 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
           const selCls = ((selIds.has(o.id) && !framed) ? ' selected' : '') + (connTarget === o.id ? ' conn-target' : '')
           const rotT = o.rot ? `rotate(${o.rot}deg)` : undefined
           if (o.type === 'sticky') return (<div key={o.id} data-id={o.id} className={'obj sticky' + selCls} style={{ left: o.x, top: o.y, width: o.w, height: o.h, background: o.color, transform: rotT }}>
-            <Rich o={o} editing={editing === o.id} editRef={editRef} className="sticky-rt" style={textStyle(o)} ph="" onChange={(p) => livePatch(o.id, p)} onBlur={() => endEdit(o.id)} />{cbadge(o)}
+            <Rich o={o} editing={editing === o.id} editRef={editRef} className="sticky-rt" style={{ ...textStyle(o), textAlign: alignOf(o), color: o.tcolor || (o.color === '#111111' ? '#ffffff' : undefined) }} ph="" onChange={(p) => livePatch(o.id, p)} onBlur={() => endEdit(o.id)} />{cbadge(o)}
           </div>)
-          if (o.type === 'text') return (<div key={o.id} data-id={o.id} className={'obj text-obj' + selCls} style={{ left: o.x, top: o.y, width: o.w || 200, height: o.h || 50, color: o.color, transform: rotT, ...textStyle(o) }}>
+          if (o.type === 'image') return (<div key={o.id} data-id={o.id} className={'obj img-obj' + selCls} style={{ left: o.x, top: o.y, width: o.w, height: o.h, transform: rotT }}>
+            <img src={o.src} alt="" draggable="false" />{cbadge(o)}
+          </div>)
+          if (o.type === 'text') return (<div key={o.id} data-id={o.id} className={'obj text-obj' + selCls} style={{ left: o.x, top: o.y, width: o.w || 200, height: o.h || 50, color: o.color, textAlign: alignOf(o), transform: rotT, ...textStyle(o) }}>
             <Rich o={o} editing={editing === o.id} editRef={editRef} className="text-rt" ph="texto" onChange={(p) => livePatch(o.id, p)} onBlur={() => endEdit(o.id)} />{cbadge(o)}
           </div>)
           return (<div key={o.id} data-id={o.id} className={'obj shape' + selCls} style={{ left: o.x, top: o.y, width: o.w, height: o.h, '--sh': o.color, '--fill': o.color + '22', borderRadius: o.type === 'ellipse' ? '50%' : 10, transform: rotT }}>
-            <div className="shape-text-wrap"><Rich o={o} editing={editing === o.id} editRef={editRef} className="shape-text" style={textStyle(o)} ph={editing === o.id ? 'digite…' : ''} onChange={(p) => livePatch(o.id, p)} onBlur={() => endEdit(o.id)} /></div>{cbadge(o)}
+            <div className="shape-text-wrap"><Rich o={o} editing={editing === o.id} editRef={editRef} className="shape-text" style={{ ...textStyle(o), textAlign: alignOf(o), color: o.tcolor, width: o.align && o.align !== 'center' ? '100%' : undefined }} ph={editing === o.id ? 'digite…' : ''} onChange={(p) => livePatch(o.id, p)} onBlur={() => endEdit(o.id)} /></div>{cbadge(o)}
           </div>)
         })}
 
@@ -657,6 +807,9 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
           {H.hh && <span className="seg-h" data-seg="y" style={{ left: H.hh.x, top: H.hh.y }} />}
         </React.Fragment>) })()}
         {marquee && <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h }} />}
+        {guides.map((g, i) => g.v
+          ? <div key={i} className="guide" style={{ left: g.at, top: g.a, height: g.b - g.a, borderLeft: `${1.5 / view.z}px dashed #e5484d` }} />
+          : <div key={i} className="guide" style={{ left: g.a, top: g.at, width: g.b - g.a, borderTop: `${1.5 / view.z}px dashed #e5484d` }} />)}
       </div>
 
       {Object.values(cursors).filter(c => c.id !== meId && peers[c.id]).map(c => (
@@ -690,6 +843,8 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
         <div className="colors">{NOTE_COLORS.map(c => <div key={c} className={'swatch' + (color === c ? ' on' : '')} style={{ background: c }} onClick={() => setSelColor(c)} />)}</div>
       </div>
 
+      {aviso && <div className="aviso">{aviso}</div>}
+
       <div className="zoombar" onPointerDown={(e) => e.stopPropagation()}>
         <button onClick={() => zoomTo(clamp(view.z / 1.2, 0.15, 4))}>−</button>
         <div className="z">{Math.round(view.z * 100)}%</div>
@@ -697,7 +852,7 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
         <button onClick={() => setView({ x: 0, y: 0, z: 1 })} title="Resetar">⤢</button>
       </div>
 
-      {editing && objs[editing] && (() => { const eo = objs[editing]; const bx = clamp(view.x + eo.x * view.z, 8, window.innerWidth - 130); const by = Math.max(8, view.y + eo.y * view.z - 46); return (
+      {editing && objs[editing] && (() => { const eo = objs[editing]; const bx = clamp(view.x + eo.x * view.z, 8, Math.max(8, window.innerWidth - 470)); const by = Math.max(8, view.y + eo.y * view.z - 46); return (
         <div className="fmtbar" style={{ left: bx, top: by }} onPointerDown={(e) => e.stopPropagation()} onContextMenu={(e) => e.preventDefault()}>
           <button onMouseDown={(e) => e.preventDefault()} onClick={() => mutate(editing, o => ({ ...o, fontSize: clamp((o.fontSize || defFont(o)) - 2, 10, 120) }))} title="Diminuir letra">A−</button>
           <button onMouseDown={(e) => e.preventDefault()} onClick={() => mutate(editing, o => ({ ...o, fontSize: clamp((o.fontSize || defFont(o)) + 2, 10, 120) }))} title="Aumentar letra">A+</button>
@@ -705,11 +860,17 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
           <button onMouseDown={(e) => e.preventDefault()} onClick={() => applyFmt('bold')} style={{ fontWeight: 800 }} title="Negrito (Ctrl+B)">B</button>
           <button onMouseDown={(e) => e.preventDefault()} onClick={() => applyFmt('italic')} style={{ fontStyle: 'italic', fontFamily: 'Georgia,serif' }} title="Itálico (Ctrl+I)">i</button>
           <button onMouseDown={(e) => e.preventDefault()} onClick={() => applyFmt('underline')} style={{ textDecoration: 'underline' }} title="Sublinhar">U</button>
+          <span className="fmt-sep" />
+          {[['left', 'Alinhar à esquerda'], ['center', 'Centralizar'], ['right', 'Alinhar à direita']].map(([a, tt]) => (
+            <button key={a} className={alignOf(eo) === a ? 'on' : ''} onMouseDown={(e) => e.preventDefault()} onClick={() => setAlign(editing, a)} title={tt}><AlignIcon a={a} /></button>
+          ))}
+          <span className="fmt-sep" />
+          {TEXT_COLORS.map(c => <span key={c} className="connsw" title="Cor da letra" style={{ background: c }} onMouseDown={(e) => e.preventDefault()} onClick={() => letterColor(editing, c)} />)}
         </div>
       ) })()}
 
-      {menu && objs[menu.id] && (() => { const m = objs[menu.id]; const hasText = m.type === 'sticky' || m.type === 'rect' || m.type === 'ellipse' || m.type === 'text'; return (
-        <div className="ctxmenu" style={{ left: Math.min(menu.x, window.innerWidth - 230), top: Math.min(menu.y, window.innerHeight - 220) }} onPointerDown={(e) => e.stopPropagation()} onContextMenu={(e) => e.preventDefault()}>
+      {menu && objs[menu.id] && (() => { const m = objs[menu.id]; const hasText = HAS_TEXT(m.type); return (
+        <div className="ctxmenu" style={{ left: Math.min(menu.x, window.innerWidth - 230), top: Math.max(8, Math.min(menu.y, window.innerHeight - 320)) }} onPointerDown={(e) => e.stopPropagation()} onContextMenu={(e) => e.preventDefault()}>
           {hasText && (
             <div className="ctx-row">
               <span className="ctx-lbl">Tamanho</span>
@@ -719,10 +880,28 @@ export default function Board({ boardId, boardName = 'Quadro', user, onExit }) {
               </div>
             </div>
           )}
-          <div className="ctx-row">
-            <span className="ctx-lbl">Cor</span>
-            <div className="ctx-colors">{NOTE_COLORS.map(c => <span key={c} className={'ctx-sw' + (m.color === c ? ' on' : '')} style={{ background: c }} onClick={() => mutate(menu.id, o => ({ ...o, color: c }))} />)}</div>
-          </div>
+          {hasText && (
+            <div className="ctx-row">
+              <span className="ctx-lbl">Alinhar</span>
+              <div className="ctx-seg">
+                {[['left', 'Esquerda'], ['center', 'Centro'], ['right', 'Direita']].map(([a, tt]) => (
+                  <button key={a} className={alignOf(m) === a ? 'on' : ''} title={tt} onClick={() => setAlign(menu.id, a)}><AlignIcon a={a} /></button>
+                ))}
+              </div>
+            </div>
+          )}
+          {hasText && (
+            <div className="ctx-row">
+              <span className="ctx-lbl">Letra</span>
+              <div className="ctx-colors">{TEXT_COLORS.map(c => <span key={c} className={'ctx-sw' + ((m.type === 'text' ? m.color : m.tcolor) === c ? ' on' : '')} style={{ background: c }} onClick={() => mutate(menu.id, o => o.type === 'text' ? { ...o, color: c } : { ...o, tcolor: c })} />)}</div>
+            </div>
+          )}
+          {m.type !== 'text' && m.type !== 'image' && (
+            <div className="ctx-row">
+              <span className="ctx-lbl">Cor</span>
+              <div className="ctx-colors">{NOTE_COLORS.map(c => <span key={c} className={'ctx-sw' + (m.color === c ? ' on' : '')} style={{ background: c }} onClick={() => mutate(menu.id, o => ({ ...o, color: c }))} />)}</div>
+            </div>
+          )}
           <button className="ctx-item" onClick={() => { setCommentText(''); setCommentFor({ id: menu.id, x: menu.x, y: menu.y }); setMenu(null) }}>💬 Adicionar comentário</button>
           <button className="ctx-item danger" onClick={() => { const o = objsRef.current[menu.id]; applyOp({ t: 'del', id: menu.id }); if (o) pushHist({ t: 'up', o }, { t: 'del', id: menu.id }); setSelIds(new Set()); setMenu(null) }}>🗑 Apagar</button>
         </div>

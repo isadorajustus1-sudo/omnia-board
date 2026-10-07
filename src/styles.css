@@ -305,3 +305,15 @@ h1,h2,h3{font-family:var(--font-serif);font-weight:600;letter-spacing:-.02em}
 .cinput:focus{border-color:var(--purple-deep)}
 .crow{display:flex;gap:8px;justify-content:flex-end}
 .crow .btn{padding:8px 14px}
+
+/* texto colado de fora: nada de fundo nem de fonte de onde veio (vale também pro que já foi colado antes) */
+.rt *{background:transparent!important;background-color:transparent!important;font-family:inherit!important}
+/* linhas de alinhamento ao mover ou redimensionar */
+.guide{position:absolute;pointer-events:none;z-index:7}
+/* imagem colada (print) */
+.img-obj{border-radius:4px;overflow:hidden;box-shadow:0 2px 10px rgba(43,35,51,.18);background:#fff}
+.img-obj img{display:block;width:100%;height:100%;object-fit:fill;pointer-events:none;user-select:none}
+.fmtbar button.on{background:rgba(255,255,255,.18);color:#fff}
+.fmtbar .connsw{align-self:center;flex:none}
+.aviso{position:fixed;left:50%;bottom:76px;transform:translateX(-50%);z-index:60;background:var(--plum-900);color:#fff;
+  border:1px solid var(--line-white);border-radius:999px;padding:9px 18px;font-size:13px;font-family:var(--font-sans);box-shadow:0 8px 24px rgba(0,0,0,.25)}
